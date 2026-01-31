@@ -1,0 +1,86 @@
+---
+- name: Create XFS filesystem on block devices
+  community.general.filesystem:
+    dev: "/dev/{{ mount.src }}"
+    fstype: xfs
+    state: present
+
+- name: Get nvme name
+  ansible.builtin.command: lsblk /dev/{{ mount.src }} -no NAME
+  register: uuid
+  changed_when: false
+
+# EC2 nvme volumes physical sector size is 512 (blockdev --getpbsz /dev/xvdx)
+# To ensure blockdev --getra /dev/xvdx == 16384, udev read_ahead_kb === 8192
+# Because: 8192 * 1024 == 16384 * 512
+- name: Create udev persistent readahead rule
+  ansible.builtin.copy:
+    dest: "/etc/udev/rules.d/99-readahead-{{ mount.src }}.rules"
+    mode: "0644"
+    owner: root
+    group: root
+    content: 'ACTION=="add|change", KERNEL=="{{ uuid.stdout | trim }}", ATTR{bdi/read_ahead_kb}="8192"'
+
+- name: Reload udev rules and trigger
+  ansible.builtin.shell:
+    cmd: "udevadm control --reload-rules && udevadm trigger /dev/{{ mount.src }}"
+  changed_when: false
+
+- name: "Create root directory for {{ mount.dest }}"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: gpadmin
+    group: gpadmin
+  loop:
+    - "{{ mount.dest }}"
+
+- name: Mount block devices
+  ansible.posix.mount:
+    src: "/dev/{{ mount.src }}"
+    path: "{{ mount.dest }}"
+    state: mounted
+    fstype: xfs
+
+- name: "Create base gocryptfs directories for {{ mount.dest }}"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: gpadmin
+    group: gpadmin
+  loop:
+    - "{{ mount.dest }}/cipher"
+    - "{{ mount.dest }}/gocryptfs"
+
+- name: "Check if cipher dir is initialized - {{ mount.dest }}"
+  ansible.builtin.stat:
+    path: "{{ mount.dest }}/cipher/gocryptfs.conf"
+  register: gocrypt_conf
+
+- name: "Initialize cipher dir - {{ mount.dest }}"
+  ansible.builtin.shell: |
+    gocryptfs -init -passfile /gocryptfs.password --exec --allow_other {{ mount.dest }}/cipher
+  when: not gocrypt_conf.stat.exists
+  changed_when: not gocrypt_conf.stat.exists
+
+- name: Mount the gocryptfs filesystem
+  ansible.posix.mount:
+    src: "{{ mount.dest }}/cipher"
+    path: "{{ mount.dest }}/gocryptfs"
+    fstype: fuse.gocryptfs
+    opts: "exec,allow_other,nofail,passfile=/gocryptfs.password"
+    state: mounted
+
+- name: "Create gp directories for {{ mount.dest }}"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: gpadmin
+    group: gpadmin
+  loop:
+    - "{{ mount.dest }}/gocryptfs/qddir"
+    - "{{ mount.dest }}/gocryptfs/primary"
+    - "{{ mount.dest }}/gocryptfs/mirror"

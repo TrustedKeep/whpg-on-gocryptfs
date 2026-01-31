@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+ROWS=${1:-10000}
+TABLE_SUFFIXES=(
+  "heap"
+  "ao_row"
+  "ao_col"
+  "ao_row_zstd5"
+  "ao_col_zstd5"
+  "ao_row_zlib"
+  "ao_col_zlib"
+  "ao_col_rle"
+  "ao_row_blk32k"
+  "ao_row_blk256k"
+  "ao_col_blk32k"
+  "ao_col_blk256k"
+  "ao_col_zstd7_blk256k"
+  "ao_row_zstd7_blk256k"
+)
+TABLE_OPTS=(
+  ''
+  'appendoptimized=true, orientation=row'
+  'appendoptimized=true, orientation=column'
+  'appendoptimized=true, orientation=row, compresstype=zstd, compresslevel=5'
+  'appendoptimized=true, orientation=column, compresstype=zstd, compresslevel=5'
+  'appendoptimized=true, orientation=row, compresstype=zlib, compresslevel=3'
+  'appendoptimized=true, orientation=column, compresstype=zlib, compresslevel=3'
+  'appendoptimized=true, orientation=column, compresstype=rle_type, compresslevel=1'
+  'appendoptimized=true, orientation=row, blocksize=32768'
+  'appendoptimized=true, orientation=row, blocksize=262144'
+  'appendoptimized=true, orientation=column, blocksize=32768'
+  'appendoptimized=true, orientation=column, blocksize=262144'
+  'appendoptimized=true, orientation=column, compresstype=zstd, compresslevel=7, blocksize=262144'
+  'appendoptimized=true, orientation=row, compresstype=zstd, compresslevel=7, blocksize=262144'
+)
+
+psql -h localhost -p 7000 -U gpadmin -d postgres -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
+
+for i in "${!TABLE_SUFFIXES[@]}"; do
+  suffix="${TABLE_SUFFIXES[$i]}"
+  opts="${TABLE_OPTS[$i]}"
+  psql -h localhost -p 7000 -U gpadmin -d postgres <<EOF
+DROP TABLE IF EXISTS test_${suffix};
+CREATE TABLE test_${suffix} (
+    id              BIGSERIAL PRIMARY KEY,
+    int_col         INTEGER,
+    bigint_col      BIGINT,
+    numeric_col     NUMERIC(12,4),
+    float_col       DOUBLE PRECISION,
+    bool_col        BOOLEAN,
+    text_col        TEXT,
+    varchar_col     VARCHAR(100),
+    char_col        CHAR(10),
+    date_col        DATE,
+    timestamp_col   TIMESTAMP,
+    timestamptz_col TIMESTAMPTZ,
+    uuid_col        UUID,
+    json_col        JSONB,
+    inet_col        INET
+) ${opts:+WITH(}${opts}${opts:+)} DISTRIBUTED BY (id);
+\d+ test_${suffix}
+
+SET synchronous_commit = OFF;
+SET maintenance_work_mem = '2GB';
+INSERT INTO test_${suffix} (
+    int_col,
+    bigint_col,
+    numeric_col,
+    float_col,
+    bool_col,
+    text_col,
+    varchar_col,
+    char_col,
+    date_col,
+    timestamp_col,
+    timestamptz_col,
+    uuid_col,
+    json_col,
+    inet_col
+)
+SELECT
+    (random() * 100000)::int,                            -- int
+    (random() * 1e12)::bigint,                           -- bigint
+    round((random() * 100000)::numeric, 4),              -- numeric
+    random() * 100000,                                   -- float
+    random() < 0.5,                                      -- boolean
+    md5(random()::text),                                 -- text
+    left(md5(random()::text), 64),                       -- varchar
+    lpad((random() * 100000)::int::text, 10, '0'),       -- char(10)
+    date '2000-01-01' + (random() * 9000)::int,          -- date
+    now() - (random() * interval '10 years'),            -- timestamp
+    now() - (random() * interval '10 years'),            -- timestamptz
+    uuid_generate_v4(),                                   -- uuid
+    jsonb_build_object(                                  -- jsonb
+        'k1', md5(random()::text),
+        'k2', (random() * 1000)::int,
+        'k3', random()
+    ),
+    inet '10.0.0.0' + (random() * 1000000)::int          -- inet
+FROM generate_series(1, ${ROWS});
+
+CREATE INDEX idx_test_${suffix}_int  ON test_${suffix} (int_col);
+CREATE INDEX idx_test_${suffix}_text ON test_${suffix} (text_col);
+CREATE INDEX idx_test_${suffix}_uuid ON test_${suffix} (uuid_col);
+CREATE INDEX idx_test_${suffix}_date ON test_${suffix} (date_col);
+CREATE INDEX idx_test_${suffix}_json ON test_${suffix} USING GIN (json_col);
+CREATE INDEX idx_test_${suffix}_inet ON test_${suffix} (inet_col inet_ops);
+ANALYZE VERBOSE test_${suffix};
+
+SELECT pg_size_pretty(pg_table_size('test_${suffix}'));
+SELECT gp_segment_id, count(*) FROM test_${suffix} GROUP BY 1 ORDER BY 1;
+EOF
+done

@@ -1,0 +1,18 @@
+---
+- name: Provision EC2 instances for GP
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "./vars/vars.yaml"
+  roles:
+    - role: provision
+
+- name: Install GP and Dependencies
+  hosts: launched_instances
+  become: true
+  gather_facts: true
+  vars_files:
+    - "./vars/vars.yaml"
+  roles:
+    - role: gp_install

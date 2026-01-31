@@ -1,0 +1,20 @@
+DEFAULT_QD_MAX_CONNECT=150
+QE_CONNECT_FACTOR=5
+ENCODING=UNICODE
+MACHINE_LIST_FILE=/gp/hostfile
+SEG_PREFIX=gpseg
+COORDINATOR_HOSTNAME={{ groups['instance_private_names'][0] }}
+COORDINATOR_DIRECTORY=/data0/gocryptfs/qddir
+COORDINATOR_PORT=7000
+PORT_BASE=7002
+declare -a DATA_DIRECTORY=(
+  /data0/gocryptfs/primary
+  /data1/gocryptfs/primary
+  /data2/gocryptfs/primary
+)
+MIRROR_PORT_BASE=7010
+declare -a MIRROR_DATA_DIRECTORY=(
+  /data2/gocryptfs/mirror
+  /data1/gocryptfs/mirror
+  /data0/gocryptfs/mirror
+)

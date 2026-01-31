@@ -1,0 +1,50 @@
+---
+- name: Generate SSH key on primary node
+  ansible.builtin.user:
+    name: gpadmin
+    generate_ssh_key: true
+    ssh_key_bits: 4096
+    ssh_key_file: .ssh/id_rsa
+  when: inventory_hostname == primary_host
+
+- name: Fetch private key from primary
+  ansible.builtin.fetch:
+    src: /home/gpadmin/.ssh/id_rsa
+    dest: /tmp/gp_id_rsa
+    flat: true
+  when: inventory_hostname == primary_host
+
+- name: Fetch public key from primary
+  ansible.builtin.fetch:
+    src: /home/gpadmin/.ssh/id_rsa.pub
+    dest: /tmp/gp_id_rsa.pub
+    flat: true
+  when: inventory_hostname == primary_host
+
+- name: Distribute keys to all nodes
+  ansible.builtin.copy:
+    src: "/tmp/{{ item.src }}"
+    dest: "/home/gpadmin/.ssh/{{ item.dest }}"
+    owner: gpadmin
+    group: gpadmin
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: "gp_id_rsa", dest: "id_rsa", mode: "0600" }
+    - { src: "gp_id_rsa.pub", dest: "id_rsa.pub", mode: "0644" }
+
+- name: Add public key to authorized_keys
+  ansible.posix.authorized_key:
+    user: gpadmin
+    state: present
+    key: "{{ lookup('file', '/tmp/gp_id_rsa.pub') }}"
+
+- name: Remove local temporary keys
+  delegate_to: localhost
+  run_once: true
+  become: false
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/gp_id_rsa
+    - /tmp/gp_id_rsa.pub

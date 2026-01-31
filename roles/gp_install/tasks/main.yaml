@@ -1,0 +1,174 @@
+---
+- name: Configure fuse to allow_other
+  ansible.builtin.lineinfile:
+    path: /etc/fuse.conf
+    line: user_allow_other
+    create: true
+    mode: "0644"
+
+- name: Install spal-release
+  ansible.builtin.dnf:
+    name:
+      - spal-release
+
+- name: Install required system packages
+  ansible.builtin.dnf:
+    name:
+      - procps-ng
+      - sshpass
+      - fuse
+      - lsof
+      - xfsprogs
+      - glibc-langpack-en
+      - iputils
+      - python3-psycopg2
+      - python3-psutil
+      - python3-pyparsing
+      - python3-pyyaml
+      - xerces-c-devel
+      - xerces-c
+    enablerepo:
+      - "*"
+    state: present
+
+- name: Create gpadmin group
+  ansible.builtin.group:
+    name: gpadmin
+    gid: 2000
+    state: present
+
+- name: Create gpadmin
+  ansible.builtin.user:
+    name: gpadmin
+    uid: 2000
+    group: gpadmin
+    home: /home/gpadmin
+    generate_ssh_key: true
+
+- name: Create and distribute ssh key-pair
+  vars:
+    primary_host: "{{ groups['launched_instances'][0] }}"
+  ansible.builtin.include_tasks: ssh.yaml
+
+- name: Read ec2-user authorized_keys
+  ansible.builtin.slurp:
+    src: /home/ec2-user/.ssh/authorized_keys
+  register: source_file
+  changed_when: false
+
+- name: Copy ec2-user authorized_keys to gpadmin
+  ansible.builtin.blockinfile:
+    path: /home/gpadmin/.ssh/authorized_keys
+    block: "{{ source_file.content | b64decode }}"
+
+- name: Run ssh-keyscan
+  ansible.builtin.command:
+    cmd: "ssh-keyscan {{ item }} 2>/dev/null"
+  loop: "{{ groups['instance_private_names'] }}"
+  register: keyscan
+  changed_when: false
+
+- name: Add known hosts
+  ansible.builtin.copy:
+    dest: /home/gpadmin/.ssh/known_hosts
+    owner: gpadmin
+    group: gpadmin
+    mode: "0600"
+    content: |
+      {% for result in keyscan.results %}
+      {{ result.stdout }}
+      {% endfor %}
+
+- name: Set gpadmin limits
+  community.general.pam_limits:
+    domain: gpadmin
+    limit_type: "-"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop:
+    - { item: "nofile", value: "524288" }
+    - { item: "nproc", value: "131072" }
+    - { item: "core", value: "unlimited" }
+
+- name: Ensure directory exists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: gpadmin
+    group: gpadmin
+  loop:
+    - "/usr/local/whpg"
+    - "/gp"
+    - "/gp/gpAdminLogs"
+
+- name: Copy and uncompress local archive to the instance
+  ansible.builtin.unarchive:
+    src: "{{ whpg_tar }}"
+    dest: "/usr/local"
+    remote_src: false
+    owner: gpadmin
+    group: gpadmin
+  become: true
+  become_user: root
+
+- name: Enforce .bashrc contents
+  ansible.builtin.lineinfile:
+    path: /home/gpadmin/.bashrc
+    line: "{{ item }}"
+  loop:
+    - "source /usr/local/whpg/greenplum_path.sh"
+    - "test -f /gp/env.sh && source /gp/env.sh"
+    - "alias l='ls -laFtrh'"
+
+- name: Install gocryptfs
+  ansible.builtin.unarchive:
+    src: "https://github.com/rfjakob/gocryptfs/releases/download/v2.6.1/gocryptfs_v2.6.1_linux-static_amd64.tar.gz"
+    dest: "/bin"
+    remote_src: true
+
+- name: Create gocryptfs password file
+  ansible.builtin.lineinfile:
+    create: true
+    path: /gocryptfs.password
+    line: password
+    mode: "0777"
+
+- name: Copy scripts
+  ansible.builtin.template:
+    owner: gpadmin
+    group: gpadmin
+    src: "{{ item }}.j2"
+    dest: "/gp/{{ item | basename }}"
+    mode: "0755"
+  loop:
+    - "../templates/build-cluster"
+    - "../templates/run-pgbench-test"
+    - "../templates/run-sql-test"
+
+- name: Copy config files
+  ansible.builtin.template:
+    owner: gpadmin
+    group: gpadmin
+    src: "{{ item }}.j2"
+    dest: "/gp/{{ item | basename }}"
+    mode: "0644"
+  loop:
+    - "../templates/clusterConfigFile"
+    - "../templates/clusterConfigPostgresAddonsFile"
+    - "../templates/env.sh"
+    - "../templates/hostfile"
+
+- name: Process each mount point
+  ansible.builtin.include_tasks: mount_gocryptfs.yaml
+  loop:
+    - { src: "xvdb", dest: "/data0" }
+    - { src: "xvdc", dest: "/data1" }
+    - { src: "xvdd", dest: "/data2" }
+  loop_control:
+    loop_var: mount
+
+- name: Print coordinator hostname
+  run_once: true
+  ansible.builtin.debug:
+    msg: "Coordinator: {{ groups['launched_instances'][0] }} -- {{ groups['instance_private_names'][0] }}"

@@ -1,0 +1,92 @@
+---
+- name: Create Security Group
+  amazon.aws.ec2_security_group:
+    name: "{{ security_group }}"
+    description: "GP security group"
+    region: "{{ region }}"
+    state: present
+    rules_egress:
+      - proto: all
+        from_port: -1
+        to_port: -1
+        cidr_ip: 0.0.0.0/0
+        rule_desc: "allow all outbound"
+  register: cluster_sg
+
+- name: Allow internal communication (Self-Reference)
+  amazon.aws.ec2_security_group:
+    name: "{{ security_group }}"
+    region: "{{ region }}"
+    description: "GP security group"
+    state: present
+    rules:
+      - proto: tcp
+        ports: 22
+        cidr_ip: 0.0.0.0/0
+        rule_desc: "allow ssh inbound from anywhere"
+      - proto: icmp
+        from_port: -1
+        to_port: -1
+        group_id: "{{ cluster_sg.group_id }}"
+        rule_desc: "allow icmp inbound from this sg"
+      - proto: tcp
+        from_port: 0
+        to_port: 65535
+        group_id: "{{ cluster_sg.group_id }}"
+        rule_desc: "allow tcp inbound from this sg"
+      - proto: udp
+        from_port: 0
+        to_port: 65535
+        group_id: "{{ cluster_sg.group_id }}"
+        rule_desc: "allow udp inbound from this sg"
+
+- name: Launch EC2 Instance with additional volumes
+  amazon.aws.ec2_instance:
+    name: "{{ instance_name }}"
+    key_name: "{{ key_name }}"
+    instance_type: "{{ instance_type }}"
+    image_id: "{{ ami_id }}"
+    region: "{{ region }}"
+    subnet_id: "{{ subnet_id }}"
+    security_group: "{{ cluster_sg.group_id }}"
+    exact_count: "{{ nodes }}"
+    state: running
+    wait: true
+    volumes:
+      - device_name: /dev/xvdb
+        ebs:
+          volume_size: "{{ data_dir_size_gb }}"
+          delete_on_termination: true
+      - device_name: /dev/xvdc
+        ebs:
+          volume_size: "{{ data_dir_size_gb }}"
+          delete_on_termination: true
+      - device_name: /dev/xvdd
+        ebs:
+          volume_size: "{{ data_dir_size_gb }}"
+          delete_on_termination: true
+  register: ec2
+
+- name: Add new instance to host group
+  ansible.builtin.add_host:
+    hostname: "{{ item.public_ip_address }}"
+    groupname: launched_instances
+    ansible_user: ec2-user
+  loop: "{{ ec2.instances }}"
+  when: item.public_ip_address is defined
+
+- name: Track private dns names
+  ansible.builtin.add_host:
+    hostname: "{{ item.private_dns_name }}"
+    groupname: instance_private_names
+    ansible_user: ec2-user
+  loop: "{{ ec2.instances }}"
+  when: item.private_dns_name is defined
+
+- name: Wait for SSH to become available
+  ansible.builtin.wait_for:
+    host: "{{ item.public_ip_address }}"
+    port: 22
+    delay: 10
+    timeout: 300
+  loop: "{{ ec2.instances }}"

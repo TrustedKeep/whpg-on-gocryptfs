@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+pgbench -h localhost -p 7000 -U gpadmin -i postgres
+pgbench -h localhost -p 7000 -U gpadmin -c 16 -j 16 -C -t 100 postgres

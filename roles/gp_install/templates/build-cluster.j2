@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+DIR="$(dirname "$(find /usr/local -name greenplum_path.sh)")"
+source "${DIR}/greenplum_path.sh"
+source /gp/env.sh
+"${DIR}/bin/gpinitsystem" \
+	-a \
+	-c /gp/clusterConfigFile \
+	-l /gp/gpAdminLogs \
+	-p /gp/clusterConfigPostgresAddonsFile \
+	-s {{ groups['instance_private_names'][-1] }} \
+	-P 7001 \
+	-S /data0/gocryptfs/standby

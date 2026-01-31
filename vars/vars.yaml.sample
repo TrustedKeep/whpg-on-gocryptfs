@@ -1,0 +1,13 @@
+whpg_tar: "{{ playbook_dir }}/build/whpg.tar.gz"
+instance_name: gp-node
+region: us-east-1
+instance_type: t3.large
+data_dir_size_gb: 10
+nodes: 2
+security_group: gp-sg
+# amazon linux 2023
+ami_id: ami-068c0051b15cdb816
+# VPC Subnet ID
+subnet_id:
+# EC2 SSH keypair name
+key_name:
